@@ -6,3 +6,5 @@ tqdm>=4.60.0
 pydantic>=2.0.0
 rembg>=2.0.0
 transformers>=4.29.0
+
+rapidocr_onnxruntime>=1.2.0
