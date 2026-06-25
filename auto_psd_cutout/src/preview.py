@@ -101,6 +101,9 @@ def save_preview(image_bgr: np.ndarray, detect_result: dict[str, Any], output_pa
             cv2.putText(canvas, label, (8, ly),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
+    # 覆盖已有预览文件
+    if output_path.exists():
+        output_path.unlink()
     ok = cv2.imwrite(str(output_path), canvas)
     if not ok:
         raise RuntimeError(f"预览图保存失败：{output_path}")
