@@ -28,7 +28,8 @@ detect:
 # grid.enabled: true → grid_cutter 分割；false → 传统 CV 检测
 grid:
   enabled: true
-  white_threshold: 240
+  bg_color: auto
+  bg_tolerance: 30
   min_gap_rows: 3
   min_gap_cols: 3
   min_row_height: 10

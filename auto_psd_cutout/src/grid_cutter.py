@@ -39,14 +39,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # OCR 去文字
     "ocr_enabled": True,
     "ocr_pad": 3,
+    # 背景色检测（auto = 从图片边角自动提取）
+    "bg_color": "auto",          # "auto" 或 [R, G, B] 值
+    "bg_tolerance": 30,          # 背景色匹配容差（0-255，越大越宽松）
     # 行检测
-    "white_threshold": 240,
-    "content_threshold": 0,  # 保留，不再使用
-    "min_gap_rows": 3,          # 连续 3 行全白 → 行间隙
-    "min_row_height": 30,       # 过滤太矮的行（文字标注）
+    "min_gap_rows": 3,           # 连续 3 行全背景色 → 行间隙
+    "min_row_height": 30,        # 过滤太矮的行（文字标注）
     # 列检测
-    "min_gap_cols": 3,          # 连续 3 列全白 → 列间隙
-    "min_col_width": 20,        # 过滤太窄的列
+    "min_gap_cols": 3,           # 连续 3 列全背景色 → 列间隙
+    "min_col_width": 20,         # 过滤太窄的列
     "min_crop_area": 200,
 }
 
@@ -56,11 +57,55 @@ DEFAULT_CONFIG: dict[str, Any] = {
 # ============================================================
 
 class SmartGridSplitter:
-    """OCR 去文字 + 非白占比行列检测。"""
+    """OCR 去文字 + 背景色自适应行列分割。"""
 
     def __init__(self, config: dict[str, Any] | None = None):
         self.cfg = {**DEFAULT_CONFIG, **(config or {})}
         self._ocr: RapidOCR | None = None
+        self._bg_color_rgb: tuple[int, int, int] | None = None
+
+    # ── 背景色检测 ──────────────────────────────────────────
+
+    def _detect_bg_color(self, rgb_array: np.ndarray) -> tuple[int, int, int]:
+        """从图片四边角自动提取背景色。
+
+        采样策略：取四条边上的像素，去掉离群值后取中位数。
+        这样可以抵抗图片角落里有内容物的干扰。
+        """
+        cfg = self.cfg
+        bg_color = cfg.get("bg_color", "auto")
+
+        # 如果配置里指定了固定颜色，直接使用
+        if isinstance(bg_color, (list, tuple)) and len(bg_color) == 3:
+            return tuple(bg_color)
+
+        h, w = rgb_array.shape[:2]
+        sample_size = min(50, w // 4, h // 4)
+
+        # 从四条边采样
+        top = rgb_array[:sample_size, :sample_size].reshape(-1, 3)
+        bottom = rgb_array[h - sample_size : h, :sample_size].reshape(-1, 3)
+        left = rgb_array[:sample_size, w - sample_size : w].reshape(-1, 3)
+        right = rgb_array[h - sample_size : h, w - sample_size : w].reshape(-1, 3)
+
+        samples = np.vstack([top, bottom, left, right])
+
+        # 去掉两端离群值（取 10%-90% 分位数，更抗干扰）
+        bg_r = int(np.percentile(samples[:, 0], 50))  # median
+        bg_g = int(np.percentile(samples[:, 1], 50))
+        bg_b = int(np.percentile(samples[:, 2], 50))
+
+        bg = (bg_r, bg_g, bg_b)
+        print(f"  背景色: RGB{bg}")
+
+        self._bg_color_rgb = bg
+        return bg
+
+    def _get_bg_color(self, rgb_array: np.ndarray) -> tuple[int, int, int]:
+        """获取背景色（带缓存）。"""
+        if self._bg_color_rgb is None:
+            self._bg_color_rgb = self._detect_bg_color(rgb_array)
+        return self._bg_color_rgb
 
     # ── OCR 去文字 ──────────────────────────────────────────
 
@@ -70,21 +115,24 @@ class SmartGridSplitter:
         return self._ocr
 
     def remove_text(self, image: Image.Image) -> Image.Image:
-        """OCR 检测文字区域并涂白（填充白色背景）。"""
+        """OCR 检测中文文字区域，用背景色填充（不是白色）。"""
         if not self.cfg.get("ocr_enabled", True):
             return image
 
         ocr = self._lazy_ocr()
-        result, _ = ocr(np.array(image))
+        rgb_array = np.array(image)
+        result, _ = ocr(rgb_array)
 
         if result is None:
             return image  # 没检测到文字
 
-        img_array = np.array(image).copy()
+        # 获取背景色
+        bg = self._get_bg_color(rgb_array)
+        img_array = rgb_array.copy()
         pad = int(self.cfg.get("ocr_pad", 3))
 
         for box, text, conf in result:
-            # 只涂白中文文字，英文内容保留（排版图上英文通常是设计元素）
+            # 只涂白中文文字
             has_chinese = any('\u4e00' <= c <= '\u9fff' for c in text)
             if not has_chinese:
                 continue
@@ -94,7 +142,8 @@ class SmartGridSplitter:
             y1 = max(0, min(ys) - pad)
             x2 = min(img_array.shape[1], max(xs) + pad)
             y2 = min(img_array.shape[0], max(ys) + pad)
-            img_array[y1:y2, x1:x2] = [255, 255, 255]
+            # 用背景色填充，不是白色
+            img_array[y1:y2, x1:x2] = [bg[0], bg[1], bg[2]]
 
         return Image.fromarray(img_array)
 
@@ -104,28 +153,34 @@ class SmartGridSplitter:
         self,
         image: Image.Image,
     ) -> list[tuple[int, int]]:
-        """行检测：全白行判定。
+        """行检测：背景色匹配。
 
-        原理：逐行扫描，有任一非白像素（gray < white_threshold）即为内容行。
-        间隙必须连续 min_gap_rows 行全部为白色才视为行分割线。
-        这确保细线（1px 宽）也不会被切掉。
+        逐行扫描，用 RGB 颜色距离判定是否属于背景。
+        一行中所有像素都与背景色匹配（在 tolerance 内）→ 间隙行。
+        只要有一个像素不匹配背景色 → 内容行。
+        间隙必须连续 min_gap_rows 行才视为行分割线。
 
         返回 [(y1, y2), ...] 每个内容行的上下边界（闭区间）。
         """
-        gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
-        h, w = gray.shape
+        rgb = np.array(image)
+        h, w = rgb.shape[:2]
         cfg = self.cfg
 
-        white_th = int(cfg.get("white_threshold", 240))
-        min_gap = int(cfg.get("min_gap_rows", 5))
+        bg = self._get_bg_color(rgb)
+        tol = int(cfg.get("bg_tolerance", 30))
+        min_gap = int(cfg.get("min_gap_rows", 3))
         min_row_h = int(cfg.get("min_row_height", 30))
 
-        # 逐行统计非白像素数
-        # 一行有任意非白像素（> 0）即视为内容
-        non_white = np.sum(gray < white_th, axis=1)
-        is_content = non_white > 0
+        # 逐行计算像素是否匹配背景色
+        # 对每行：取所有像素与 bg 的欧式距离，如果最大值 <= tol → 全背景
+        bg_np = np.array(bg, dtype=np.float32)
+        row_pixels = rgb.astype(np.float32)  # (h, w, 3)
+        diff = np.abs(row_pixels - bg_np)     # (h, w, 3)
+        max_diff = np.max(diff, axis=2)        # (h, w) 每个像素的最大通道差
+        row_max = np.max(max_diff, axis=1)     # (h,)   每行的最大像素差
+        is_content = row_max > tol
 
-        # 找间隙（连续全白行）
+        # 找间隙（连续全背景行）
         gaps = self._find_runs(is_content, False, min_gap)
 
         # 反推内容行
@@ -142,28 +197,31 @@ class SmartGridSplitter:
         self,
         row_image: Image.Image,
     ) -> list[tuple[int, int]]:
-        """行内列检测：全白列判定。
+        """行内列检测：背景色匹配。
 
-        原理：逐列扫描，有任一非白像素即视为内容列。
-        间隙必须连续 min_gap_cols 列全部为白色才视为列分割线。
-        这确保水平细线也不会被切掉。
+        逐列扫描，用 RGB 颜色距离判定是否属于背景。
+        一列中所有像素都与背景色匹配 → 间隙列。
+        只要有一个像素不匹配 → 内容列。
 
         返回 [(x1, x2), ...] 每个内容列的左右边界（闭区间）。
         """
-        gray = cv2.cvtColor(np.array(row_image), cv2.COLOR_RGB2GRAY)
-        h, w = gray.shape
+        rgb = np.array(row_image)
+        h, w = rgb.shape[:2]
         cfg = self.cfg
 
-        white_th = int(cfg.get("white_threshold", 240))
+        bg = self._get_bg_color(rgb)
+        tol = int(cfg.get("bg_tolerance", 30))
         min_gap = int(cfg.get("min_gap_cols", 3))
         min_col_w = int(cfg.get("min_col_width", 20))
 
-        # 逐列统计非白像素数
-        # 一列有任意非白像素即视为内容
-        non_white = np.sum(gray < white_th, axis=0)
-        is_content = non_white > 0
+        # 逐列计算像素是否匹配背景色
+        bg_np = np.array(bg, dtype=np.float32)
+        diff = np.abs(rgb.astype(np.float32) - bg_np)
+        max_diff = np.max(diff, axis=2)        # (h, w) 每像素最大通道差
+        col_max = np.max(max_diff, axis=0)     # (w,)   每列的最大像素差
+        is_content = col_max > tol
 
-        # 找间隙（连续全白列）
+        # 找间隙（连续全背景列）
         gaps = self._find_runs(is_content, False, min_gap)
 
         # 反推内容列
