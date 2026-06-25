@@ -101,23 +101,32 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
     preview_dir = image_output_dir / "preview"
     image_output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save full RGBA base layer
+    # Save full RGBA base layer (use OCR-cleaned image if grid mode)
+    # Note: full_cutout.png is re-created after detection when ocr_cleaned_bgr exists
     rgba_full_path = None
-    if rmbg_alpha is not None:
-        rgba_full_path = image_output_dir / "full_cutout.png"
-        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        rgba_full = np.dstack([rgb, rmbg_alpha])
-        Image.fromarray(rgba_full, "RGBA").save(str(rgba_full_path))
-        print(f"全图透明底图已保存: {rgba_full_path.name}")
 
     # Step 2: Structure channel detection (Path A) + dual-channel scoring (Path B)
-        grid_mode = config.get("grid", {}).get("enabled", True)
+    grid_mode = config.get("grid", {}).get("enabled", True)
     if grid_mode:
         detect_result = detect_ui_elements_grid(image_bgr, config)
     else:
         detect_result = detect_ui_elements(image_bgr, config, rmbg_prob_map=rmbg_prob_map)
     boxes = detect_result.get("boxes", [])
     groups = detect_result.get("groups", [])
+
+    # 如果有 OCR 涂白图，用它做抠图底图（中文文字被涂白）
+    source_bgr = detect_result.get("ocr_cleaned_bgr")
+    if source_bgr is not None:
+        image_bgr = source_bgr
+        print("使用 OCR 涂白后的图片作为抠图底图")
+
+    # Save full RGBA base layer
+    if rmbg_alpha is not None and rgba_full_path is None:
+        rgba_full_path = image_output_dir / "full_cutout.png"
+        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        rgba_full = np.dstack([rgb, rmbg_alpha])
+        Image.fromarray(rgba_full, "RGBA").save(str(rgba_full_path))
+        print(f"全图透明底图已保存: {rgba_full_path.name}")
 
     print(f"检测到 {len(groups)} 行，{len(boxes)} 个元素")
     if not boxes:

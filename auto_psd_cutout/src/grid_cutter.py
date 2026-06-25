@@ -84,6 +84,10 @@ class SmartGridSplitter:
         pad = int(self.cfg.get("ocr_pad", 3))
 
         for box, text, conf in result:
+            # 只涂白中文文字，英文内容保留（排版图上英文通常是设计元素）
+            has_chinese = any('\u4e00' <= c <= '\u9fff' for c in text)
+            if not has_chinese:
+                continue
             xs = [int(p[0]) for p in box]
             ys = [int(p[1]) for p in box]
             x1 = max(0, min(xs) - pad)
