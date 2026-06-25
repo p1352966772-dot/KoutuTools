@@ -1,0 +1,66 @@
+detect:
+  adaptive_block: 31
+  adaptive_c: 2
+  canny_high: 150
+  canny_low: 50
+  l1_row_kernel: 30
+  lg_kernel: 17
+  max_aspect_ratio: 12.0
+  md_kernel: 9
+  merge_h_gap: 18
+  merge_iou: 0.4
+  merge_y_overlap_threshold: 0.75
+  min_area_ratio: 0.0003
+  min_aspect_ratio: 0.05
+  min_char_size: 14
+  min_element_size: 10
+  row_gap_min: 12
+  sm_kernel: 5
+  text_max_area_pct: 0.005
+  text_max_height_pct: 0.08
+  text_merge_gap: 25
+  text_y_alignment_tol: 10
+  two_stage_min_size: 150
+  white_threshold: 230
+input_dir: input
+label_text_cleanup:
+  dark_threshold: 120
+  dilate: 1
+  enabled: false
+  full_page: true
+  max_component_area: 260
+  max_component_height: 26
+  max_component_width: 36
+  protect_color_radius: 8
+  protect_saturation_min: 90
+  region_left_width: 170
+  region_top_height: 45
+  saturation_max: 80
+output_dir: output
+rgba_crop:
+  enabled: true
+photoshop:
+  add_box_layers: false
+  add_original_layer: false
+  box_color:
+  - 255
+  - 0
+  - 0
+  box_thickness: 2
+  enabled: true
+  psd_name_suffix: _auto
+  visible: true
+preview:
+  box_thickness: 2
+  draw_box: true
+  draw_groups: true
+  draw_index: true
+  draw_rows: true
+rmbg_scoring:
+  align_weight: 0.15
+  area_weight: 0.15
+  edge_weight: 0.3
+  enabled: true
+  rmbg_weight: 0.25
+  score_threshold: 0.35
+  shape_weight: 0.15
