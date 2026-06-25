@@ -41,11 +41,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ocr_pad": 3,
     # 行检测
     "white_threshold": 240,
-    "content_threshold": 0.05,  # 非白像素 > 5% → 内容行
-    "min_gap_rows": 5,          # 连续 5 行非内容 → 行间隙
+    "content_threshold": 0,  # 保留，不再使用
+    "min_gap_rows": 3,          # 连续 3 行全白 → 行间隙
     "min_row_height": 30,       # 过滤太矮的行（文字标注）
     # 列检测
-    "min_gap_cols": 3,          # 连续 3 列非内容 → 列间隙
+    "min_gap_cols": 3,          # 连续 3 列全白 → 列间隙
     "min_col_width": 20,        # 过滤太窄的列
     "min_crop_area": 200,
 }
@@ -100,7 +100,11 @@ class SmartGridSplitter:
         self,
         image: Image.Image,
     ) -> list[tuple[int, int]]:
-        """改进版行检测：非白像素占比逐行扫描。
+        """行检测：全白行判定。
+
+        原理：逐行扫描，有任一非白像素（gray < white_threshold）即为内容行。
+        间隙必须连续 min_gap_rows 行全部为白色才视为行分割线。
+        这确保细线（1px 宽）也不会被切掉。
 
         返回 [(y1, y2), ...] 每个内容行的上下边界（闭区间）。
         """
@@ -109,15 +113,15 @@ class SmartGridSplitter:
         cfg = self.cfg
 
         white_th = int(cfg.get("white_threshold", 240))
-        content_th = float(cfg.get("content_threshold", 0.05))
         min_gap = int(cfg.get("min_gap_rows", 5))
         min_row_h = int(cfg.get("min_row_height", 30))
 
-        # 逐行计算非白像素占比
-        non_white = np.sum(gray < white_th, axis=1) / w
-        is_content = non_white > content_th
+        # 逐行统计非白像素数
+        # 一行有任意非白像素（> 0）即视为内容
+        non_white = np.sum(gray < white_th, axis=1)
+        is_content = non_white > 0
 
-        # 找间隙（连续非内容行）
+        # 找间隙（连续全白行）
         gaps = self._find_runs(is_content, False, min_gap)
 
         # 反推内容行
@@ -134,7 +138,11 @@ class SmartGridSplitter:
         self,
         row_image: Image.Image,
     ) -> list[tuple[int, int]]:
-        """行内列检测：非白像素占比逐列扫描。
+        """行内列检测：全白列判定。
+
+        原理：逐列扫描，有任一非白像素即视为内容列。
+        间隙必须连续 min_gap_cols 列全部为白色才视为列分割线。
+        这确保水平细线也不会被切掉。
 
         返回 [(x1, x2), ...] 每个内容列的左右边界（闭区间）。
         """
@@ -143,15 +151,15 @@ class SmartGridSplitter:
         cfg = self.cfg
 
         white_th = int(cfg.get("white_threshold", 240))
-        content_th = float(cfg.get("content_threshold", 0.05))
         min_gap = int(cfg.get("min_gap_cols", 3))
         min_col_w = int(cfg.get("min_col_width", 20))
 
-        # 逐列计算非白像素占比
-        non_white = np.sum(gray < white_th, axis=0) / h
-        is_content = non_white > content_th
+        # 逐列统计非白像素数
+        # 一列有任意非白像素即视为内容
+        non_white = np.sum(gray < white_th, axis=0)
+        is_content = non_white > 0
 
-        # 找间隙（连续非内容列）
+        # 找间隙（连续全白列）
         gaps = self._find_runs(is_content, False, min_gap)
 
         # 反推内容列
