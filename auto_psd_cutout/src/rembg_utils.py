@@ -266,3 +266,121 @@ def alpha_mask_from_rgba(rgba: np.ndarray) -> np.ndarray:
     alpha = rgba[:, :, 3]
     _, binary = cv2.threshold(alpha, 128, 255, cv2.THRESH_BINARY)
     return binary
+
+
+def refine_alpha_for_white_bg(
+    alpha: np.ndarray,
+    image_bgr: np.ndarray,
+    white_threshold: int = 230,
+) -> np.ndarray:
+    """针对白底图的后处理：保护元素内的白色不被抠掉。
+
+    标准 RGB 模型（BRIA / U2-Net）会把白色背景和元素内白色一起误删。
+    此函数通过连通域分析解决：
+      1. 找到图像中所有白色像素
+      2. 触碰图像边缘的白色区域 → 强制透明（真正的背景）
+      3. 不触碰图像边缘的白色区域 → 强制不透明（元素内的白色内容）
+      4. 非白色区域保持原 alpha 不变
+
+    Parameters
+    ----------
+    alpha : np.ndarray
+        原始 alpha 掩码 [0, 255], uint8.
+    image_bgr : np.ndarray
+        原图 BGR.
+    white_threshold : int
+        判定为白色的灰度阈值，默认 230.
+
+    Returns
+    -------
+    np.ndarray
+        优化后的 alpha 掩码 [0, 255], uint8.
+    """
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+
+    # 二值化：白色像素为 255，其余为 0
+    _, white_binary = cv2.threshold(gray, white_threshold, 255, cv2.THRESH_BINARY)
+
+    # 连通域分析（4 连通，避免对角线误连）
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        white_binary, connectivity=4
+    )
+
+    result = alpha.copy()
+
+    for label in range(1, num_labels):
+        x = int(stats[label, cv2.CC_STAT_LEFT])
+        y = int(stats[label, cv2.CC_STAT_TOP])
+        bw = int(stats[label, cv2.CC_STAT_WIDTH])
+        bh = int(stats[label, cv2.CC_STAT_HEIGHT])
+
+        # 判断是否触碰图像边缘
+        touches_border = (
+            x <= 0
+            or y <= 0
+            or (x + bw) >= w - 1
+            or (y + bh) >= h - 1
+        )
+
+        component_mask = labels == label
+
+        if touches_border:
+            # 背景白 → 透明
+            result[component_mask] = 0
+        else:
+            # 前景白（元素内白色内容）→ 不透明
+            result[component_mask] = 255
+
+    return result
+
+
+def get_white_bg_alpha(image_bgr: np.ndarray, white_threshold: int = 230) -> np.ndarray:
+    """白底图专用抠图：直接用边缘连通性判断，无需深度学习模型。
+
+    对于纯白背景图，此方法比任何 RGB 模型都更可靠：
+      - 100% 保留元素内的白色内容
+      - 零模型下载，毫秒级速度
+      - 不受模型泛化能力限制
+
+    Returns uint8 alpha mask [0, 255], 255=foreground, 0=background.
+    """
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+
+    # 二值化
+    _, white_binary = cv2.threshold(gray, white_threshold, 255, cv2.THRESH_BINARY)
+
+    # 非白色区域直接标记为前景
+    not_white = white_binary == 0
+
+    # 白色区域做连通域分析
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        white_binary, connectivity=4
+    )
+
+    # 初始化：非白色 → 255，白色暂设为 0
+    result = np.zeros((h, w), dtype=np.uint8)
+    result[not_white] = 255
+
+    for label in range(1, num_labels):
+        x = int(stats[label, cv2.CC_STAT_LEFT])
+        y = int(stats[label, cv2.CC_STAT_TOP])
+        bw = int(stats[label, cv2.CC_STAT_WIDTH])
+        bh = int(stats[label, cv2.CC_STAT_HEIGHT])
+
+        touches_border = (
+            x <= 0
+            or y <= 0
+            or (x + bw) >= w - 1
+            or (y + bh) >= h - 1
+        )
+
+        component_mask = labels == label
+
+        if not touches_border:
+            # 不与边缘相连的白色区域 → 前景
+            result[component_mask] = 255
+        # 与边缘相连的白色区域 → 保持 0（背景）
+
+    return result

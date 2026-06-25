@@ -22,6 +22,20 @@ detect:
   text_y_alignment_tol: 10
   two_stage_min_size: 150
   white_threshold: 230
+# ── 行列投影分割（替代传统 CV 检测）───────────────────────────
+# 两遍扫描：先按行间隙切分，再在行内按列间隙切分。
+# 适合白底、行列排列整齐的密集排版图。
+# grid.enabled: true → grid_cutter 分割；false → 传统 CV 检测
+grid:
+  enabled: true
+  white_threshold: 240
+  min_gap_rows: 3
+  min_gap_cols: 3
+  min_row_height: 10
+  min_crop_area: 200
+  crop_border: 0
+
+
 input_dir: input
 label_text_cleanup:
   dark_threshold: 120
@@ -37,8 +51,18 @@ label_text_cleanup:
   region_top_height: 45
   saturation_max: 80
 output_dir: output
+
+# ── 白底图抠图 ───────────────────────────────────────────────
+# 针对纯白背景的密集排版图优化。
+# white_bg_alpha: 用连通域分析替代深度学习模型，100% 保留元素内白色。
+#   enabled: true  → 使用边缘连通性抠图（快速、精确、零模型下载）
+#   enabled: false → 使用 BRIA RMBG-1.4（通用，适合非纯白背景）
+# white_threshold: 判定为白色的灰度阈值（0-255），默认 230。
 rgba_crop:
   enabled: true
+  white_bg_alpha: true
+  white_threshold: 230
+
 photoshop:
   add_box_layers: false
   add_original_layer: false

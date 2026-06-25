@@ -95,7 +95,7 @@ def detect_ui_elements(image_bgr: np.ndarray, config: dict[str, Any], rmbg_prob_
         return {"boxes": [], "groups": []}
 
     # ===== Step 10: Row clustering =====
-    grouped_boxes, groups = _cluster_rows(all_boxes, row_gap_min * 2)
+    grouped_boxes, groups = _cluster_rows(all_boxes, row_gap_min * 2, mask_filled)
 
     # ===== Step 11: Semantic naming =====
     for group in groups:
@@ -616,25 +616,125 @@ def _filter_noise(boxes: list[dict], total_px: int, min_area_ratio: float, min_s
     return result
 
 
-def _cluster_rows(boxes: list[dict], row_tol: int) -> tuple[list[dict], list[dict]]:
+def _cluster_rows(
+    boxes: list[dict],
+    row_tol: int,
+    mask_filled: np.ndarray | None = None,
+    col_gap_min: int = 5,
+) -> tuple[list[dict], list[dict]]:
+    """两阶段聚类：先分行（Y 范围交叠），再行内竖缝检测切分元素。
+
+    分行策略（解决高低差问题）：
+      同一行的元素可能高低不平（白底图上常见），用两个条件共同判断：
+      1. 交叠条件：Y 范围交叠比例 >= 30%（你上我下也算同一行）
+      2. 距离条件：Y 中心点距离 <= row_tol（挨得近也算同一行）
+
+    行内竖缝切分：
+      在每个行的 Y 区域内，计算 mask 的竖直投影（列方向），
+      找到内容为零的间隙，用间隙位置为元素标注列编号。
+
+    Parameters
+    ----------
+    row_tol : int
+        行聚类容差（像素）。元素 Y 中心距离 <= row_tol 视为同一行。
+    mask_filled : np.ndarray | None
+        填充后的前景掩码。有值时才启用行内竖缝检测。
+    col_gap_min : int
+        列间隙最小像素数，小于此值的缝隙忽略（防误切）。
+    """
     if not boxes:
         return [], []
+
+    # ── Phase 1: Y-overlap row clustering ─────────────────────
+    # 用 Y-overlap + 中心距离双重判断，解决高低差问题
     sorted_boxes = sorted(boxes, key=lambda b: (b["y1"] + b["y2"]) // 2)
     groups: list[list[dict]] = []
-    centers: list[int] = []
+    group_bboxes: list[tuple[int, int]] = []  # (y1, y2) of each group
+
     for box in sorted_boxes:
-        cy = (box["y1"] + box["y2"]) // 2
+        y1, y2 = box["y1"], box["y2"]
+        bh = max(1, y2 - y1)
+        cy = (y1 + y2) // 2
         placed = False
-        for gi, gc in enumerate(centers):
-            if abs(cy - gc) <= row_tol:
+
+        for gi, (gy1, gy2) in enumerate(group_bboxes):
+            gh = max(1, gy2 - gy1)
+            # 条件 1: Y 范围交叠 >= 30%
+            overlap = max(0, min(y2, gy2) - max(y1, gy1))
+            overlap_ratio = overlap / max(1, min(bh, gh))
+
+            # 条件 2: 中心距离 <= row_tol
+            gcy = (gy1 + gy2) // 2
+            center_dist = abs(cy - gcy)
+
+            if overlap_ratio >= 0.3 or center_dist <= row_tol:
                 groups[gi].append(box)
-                centers[gi] = sum((b["y1"] + b["y2"]) // 2 for b in groups[gi]) // len(groups[gi])
+                # 更新该行的总范围（取并集，最高到最低）
+                group_bboxes[gi] = (min(y1, gy1), max(y2, gy2))
                 placed = True
                 break
+
         if not placed:
             groups.append([box])
-            centers.append(cy)
-    gdata = sorted(enumerate(groups), key=lambda x: centers[x[0]])
+            group_bboxes.append((y1, y2))
+
+    # ── Phase 2: Merge small fragmented groups ────────────────
+    # 小群组（高度小、元素少）合并到相邻大行
+    merged_groups: list[list[dict]] = []
+    merged_bboxes: list[tuple[int, int]] = []
+
+    for gboxes, (gy1, gy2) in zip(groups, group_bboxes):
+        gh = gy2 - gy1
+        is_small = gh < row_tol and len(gboxes) <= 2
+
+        if is_small and merged_groups:
+            prev_y1, prev_y2 = merged_bboxes[-1]
+            gap = gy1 - prev_y2
+            if 0 < gap < row_tol * 1.5:  # 离上一行很近
+                merged_groups[-1].extend(gboxes)
+                merged_bboxes[-1] = (min(gy1, prev_y1), max(gy2, prev_y2))
+                continue
+
+        merged_groups.append(gboxes)
+        merged_bboxes.append((gy1, gy2))
+
+    groups = merged_groups
+    group_bboxes = merged_bboxes
+
+    # ── Phase 3: Internal column detection within each row ────
+    # 在行内检测竖缝间隙，为元素标注列编号
+    if mask_filled is not None:
+        _, img_w = mask_filled.shape[:2]
+        for gi, gboxes in enumerate(groups):
+            ry1, ry2 = group_bboxes[gi]
+            row_slice = mask_filled[ry1:ry2, :] if ry2 > ry1 else None
+            if row_slice is None:
+                continue
+            v_proj = np.count_nonzero(row_slice, axis=0)
+
+            # 找列间隙（连续 col_gap_min 列及以上内容为零）
+            is_empty = (v_proj == 0).astype(np.uint8)
+            empty_start = None
+            col_gaps: list[int] = []
+            for cx in range(img_w):
+                if is_empty[cx] and empty_start is None:
+                    empty_start = cx
+                elif not is_empty[cx] and empty_start is not None:
+                    if cx - empty_start >= col_gap_min:
+                        col_gaps.append((empty_start + cx) // 2)
+                    empty_start = None
+            if empty_start is not None and img_w - empty_start >= col_gap_min:
+                col_gaps.append((empty_start + img_w) // 2)
+
+            if col_gaps:
+                # 给行内元素标注列区间编号
+                for box in gboxes:
+                    cx = (box["x1"] + box["x2"]) // 2
+                    col_idx = sum(1 for gap in col_gaps if cx > gap) + 1
+                    box["col"] = col_idx
+
+    # ── Phase 4: Format output ────────────────────────────────
+    gdata = sorted(enumerate(groups), key=lambda x: group_bboxes[x[0]][0])
     glist: list[dict] = []
     blist: list[dict] = []
     for gi, (_, gboxes) in enumerate(gdata):
@@ -645,7 +745,9 @@ def _cluster_rows(boxes: list[dict], row_tol: int) -> tuple[list[dict], list[dic
         for box in gboxes:
             box["group_id"] = gid
             blist.append(box)
+
     return blist, glist
+
 
 
 def _h_position(box: dict, width: int) -> str:

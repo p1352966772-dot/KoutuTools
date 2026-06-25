@@ -9,7 +9,8 @@ import numpy as np
 from PIL import Image
 
 from .detector import detect_ui_elements
-from .rembg_utils import get_foreground_probability, get_bria14_alpha
+from .grid_cutter import detect_ui_elements_grid
+from .rembg_utils import get_foreground_probability, get_bria14_alpha, get_white_bg_alpha, refine_alpha_for_white_bg
 from .photoshop_jsx import generate_jsx
 from .photoshop_runner import run_photoshop_jsx
 from .preview import save_preview
@@ -39,6 +40,40 @@ def collect_input_images(input_dir: Path) -> list[Path]:
     )
 
 
+def _get_alpha_mask(image_bgr: np.ndarray, config: dict[str, Any]) -> np.ndarray | None:
+    """生成全图 alpha 掩码，自动选择最适合当前配置的方法。"""
+    rgba_config = config.get("rgba_crop", {})
+    if not bool(rgba_config.get("enabled", True)):
+        return None
+
+    # ── 方法 1：白底图连通域抠图（默认）───────────────────────────────
+    # 针对纯白背景密集排版图优化。
+    # 原理：白色像素连通域分析，触碰边缘 → 背景，不碰边缘 → 前景。
+    # 优点：100% 保留元素内白色内容、零模型下载、毫秒级速度。
+    if bool(rgba_config.get("white_bg_alpha", True)):
+        white_threshold = int(rgba_config.get("white_threshold", 230))
+        try:
+            alpha = get_white_bg_alpha(image_bgr, white_threshold)
+            print(f"白底图抠图完成 ({alpha.shape})")
+            return alpha
+        except Exception as exc:
+            print(f"白底图抠图失败 ({exc})，回退到 BRIA 模型。")
+
+    # ── 方法 2：BRIA RMBG-1.4 深度学习模型 ──────────────────────────
+    try:
+        alpha = get_bria14_alpha(image_bgr)
+        # BRIA 可能误删元素内白色 → 用边缘连通性保护
+        if bool(rgba_config.get("protect_inner_white", True)):
+            white_threshold = int(rgba_config.get("white_threshold", 230))
+            alpha = refine_alpha_for_white_bg(alpha, image_bgr, white_threshold)
+        print(f"BRIA alpha mask loaded ({alpha.shape})")
+        return alpha
+    except Exception as exc:
+        print(f"BRIA alpha mask failed: {exc}")
+
+    return None
+
+
 def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool = True) -> ProcessResult:
     print(f"开始处理：{image_path.name}")
     try:
@@ -48,11 +83,8 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
         print(msg)
         return ProcessResult(image=image_path, ok=False, error=msg)
 
-    # Step 1: RMBG foreground probability map for dual-channel scoring (Path B - auxiliary only)
+    # Step 1: 生成全图 alpha 掩码（透明底图）
     rmbg_prob_map = None
-    rmbg_alpha = None
-    rgba_config = config.get("rgba_crop", {})
-    rgba_enabled = bool(rgba_config.get("enabled", True))
     scoring_config = config.get("rmbg_scoring", {})
     if bool(scoring_config.get("enabled", False)):
         try:
@@ -61,20 +93,15 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
         except Exception as exc:
             print(f"RMBG probability map failed (proceeding without): {exc}")
             rmbg_prob_map = None
-    if rgba_enabled:
-        try:
-            rmbg_alpha = get_bria14_alpha(image_bgr)
-            print(f"RMBG alpha mask loaded ({rmbg_alpha.shape})")
 
-        except Exception as exc:
-            print(f"RMBG alpha mask failed: {exc}")
+    rmbg_alpha = _get_alpha_mask(image_bgr, config)
 
     output_root = Path(config["output_dir"])
     image_output_dir = output_root / image_path.stem
     preview_dir = image_output_dir / "preview"
     image_output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save full RGBA base layer (RMBG cutout as transparent base)
+    # Save full RGBA base layer
     rgba_full_path = None
     if rmbg_alpha is not None:
         rgba_full_path = image_output_dir / "full_cutout.png"
@@ -84,7 +111,11 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
         print(f"全图透明底图已保存: {rgba_full_path.name}")
 
     # Step 2: Structure channel detection (Path A) + dual-channel scoring (Path B)
-    detect_result = detect_ui_elements(image_bgr, config, rmbg_prob_map=rmbg_prob_map)
+        grid_mode = config.get("grid", {}).get("enabled", True)
+    if grid_mode:
+        detect_result = detect_ui_elements_grid(image_bgr, config)
+    else:
+        detect_result = detect_ui_elements(image_bgr, config, rmbg_prob_map=rmbg_prob_map)
     boxes = detect_result.get("boxes", [])
     groups = detect_result.get("groups", [])
 
