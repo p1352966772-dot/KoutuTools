@@ -43,20 +43,20 @@ def collect_input_images(input_dir: Path) -> list[Path]:
 
 def _get_alpha_mask(image_bgr: np.ndarray, config: dict[str, Any]) -> np.ndarray | None:
     """生成全图 alpha 掩码，自动选择最适合当前配置的方法。
-    如果检测到白底，自动切换为色键抠图。"""
+    如果检测到品红底，自动切换为色键抠图。"""
     rgba_config = config.get("rgba_crop", {})
     if not bool(rgba_config.get("enabled", True)):
         return None
 
-    # ── 方法 1：白底图连通域抠图（默认）───────────────────────────────
+    # ── 方法 1：品红底图连通域抠图（默认）───────────────────────────────
     if bool(rgba_config.get("white_bg_alpha", True)):
         white_threshold = int(rgba_config.get("white_threshold", 230))
         try:
             alpha = get_white_bg_alpha(image_bgr, white_threshold)
-            print(f"白底图抠图完成 ({alpha.shape})")
+            print(f"品红底图抠图完成 ({alpha.shape})")
             return alpha
         except Exception as exc:
-            print(f"白底图抠图失败 ({exc})，回退到 BRIA 模型。")
+            print(f"品红底图抠图失败 ({exc})，回退到 BRIA 模型。")
 
     # ── 方法 2：BRIA RMBG-1.4（需要 torch）───────────────────────
     try:
@@ -73,7 +73,7 @@ def _get_alpha_mask(image_bgr: np.ndarray, config: dict[str, Any]) -> np.ndarray
         try:
             white_threshold = int(rgba_config.get("white_threshold", 230))
             alpha = get_white_bg_alpha(image_bgr, white_threshold)
-            print(f"白底图抠图完成 (fallback) ({alpha.shape})")
+            print(f"品红底图抠图完成 (fallback) ({alpha.shape})")
             return alpha
         except Exception as exc2:
             print(f"Fallback also failed: {exc2}")
@@ -230,7 +230,7 @@ def read_image_bgr(image_path: Path) -> np.ndarray:
     return cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
 
 
-def _read_ai_as_bgr(ai_path: Path, max_dim: int | None = None, bg_color: tuple = (255, 255, 255)) -> np.ndarray:
+def _read_ai_as_bgr(ai_path: Path, max_dim: int | None = None, bg_color: tuple = (255, 0, 255)  # purple/magenta, unlikely in artwork) -> np.ndarray:
     """Render .ai file to BGR image via embedded PDF stream (PyMuPDF).
     bg_color: RGB tuple for background fill (default green screen for easy keying).
     Limits output to max_dim pixels on longest side."""
@@ -253,5 +253,5 @@ def _read_ai_as_bgr(ai_path: Path, max_dim: int | None = None, bg_color: tuple =
     fg = rgba[:, :, :3].astype(np.float32)
     rgb = (fg * alpha[:, :, None] + canvas * (1 - alpha[:, :, None])).astype(np.uint8)
     doc.close()
-    print(f"  AI渲染: {rgb.shape[1]}x{rgb.shape[0]} @{dpi:.0f}DPI 白底 (max={max_dim}px)")
+    print(f"  AI渲染: {rgb.shape[1]}x{rgb.shape[0]} @{dpi:.0f}DPI 品红底 (max={max_dim}px)")
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
