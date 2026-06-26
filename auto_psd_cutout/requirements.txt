@@ -8,3 +8,5 @@ rembg>=2.0.0
 transformers>=4.29.0
 
 rapidocr_onnxruntime>=1.2.0
+
+pymupdf>=1.23.0

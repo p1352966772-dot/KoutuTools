@@ -10,13 +10,13 @@ from PIL import Image
 
 from .detector import detect_ui_elements
 from .grid_cutter import detect_ui_elements_grid
-from .rembg_utils import get_foreground_probability, get_bria14_alpha, get_white_bg_alpha, refine_alpha_for_white_bg
+from .rembg_utils import get_foreground_probability, get_bria14_alpha, get_white_bg_alpha, refine_alpha_for_white_bg, get_chroma_key_alpha
 from .photoshop_jsx import generate_jsx
 from .photoshop_runner import run_photoshop_jsx
 from .preview import save_preview
 
 
-SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".ai"}
 
 
 @dataclass
@@ -41,15 +41,27 @@ def collect_input_images(input_dir: Path) -> list[Path]:
 
 
 def _get_alpha_mask(image_bgr: np.ndarray, config: dict[str, Any]) -> np.ndarray | None:
-    """生成全图 alpha 掩码，自动选择最适合当前配置的方法。"""
+    """生成全图 alpha 掩码，自动选择最适合当前配置的方法。
+    如果检测到绿幕背景，自动切换为色键抠图。"""
     rgba_config = config.get("rgba_crop", {})
     if not bool(rgba_config.get("enabled", True)):
         return None
 
+    # ── 自动检测绿幕 ──────────────────────────────────────────────
+    h, w = image_bgr.shape[:2]
+    corners = image_bgr[0, 0], image_bgr[0, w-1], image_bgr[h-1, 0], image_bgr[h-1, w-1]
+    hsv_corners = cv2.cvtColor(np.uint8([list(corners)]), cv2.COLOR_BGR2HSV)[0]
+    # Green hue is ~60 in HSV; check if corners are green (H 40-85, S > 100, V > 100)
+    is_green = all(40 <= hsv[0] <= 85 and hsv[1] > 100 and hsv[2] > 100 for hsv in hsv_corners)
+    if is_green:
+        try:
+            alpha = get_chroma_key_alpha(image_bgr)
+            print(f"绿幕抠图完成 ({alpha.shape})")
+            return alpha
+        except Exception as exc:
+            print(f"色键抠图失败 ({exc})，回退到默认方法。")
+
     # ── 方法 1：白底图连通域抠图（默认）───────────────────────────────
-    # 针对纯白背景密集排版图优化。
-    # 原理：白色像素连通域分析，触碰边缘 → 背景，不碰边缘 → 前景。
-    # 优点：100% 保留元素内白色内容、零模型下载、毫秒级速度。
     if bool(rgba_config.get("white_bg_alpha", True)):
         white_threshold = int(rgba_config.get("white_threshold", 230))
         try:
@@ -187,6 +199,10 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
 
 
 def read_image_bgr(image_path: Path) -> np.ndarray:
+    """Read image as BGR numpy array. Supports .ai via PyMuPDF (embedded PDF)."""
+    suffix = image_path.suffix.lower()
+    if suffix == ".ai":
+        return _read_ai_as_bgr(image_path, max_dim=None)
     try:
         with Image.open(image_path) as img:
             rgb = img.convert("RGB")
@@ -194,3 +210,30 @@ def read_image_bgr(image_path: Path) -> np.ndarray:
     except Exception as exc:
         raise RuntimeError(f"无法打开图片：{exc}") from exc
     return cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
+
+
+def _read_ai_as_bgr(ai_path: Path, max_dim: int | None = None, bg_color: tuple = (0, 255, 0)) -> np.ndarray:
+    """Render .ai file to BGR image via embedded PDF stream (PyMuPDF).
+    bg_color: RGB tuple for background fill (default green screen for easy keying).
+    Limits output to max_dim pixels on longest side."""
+    import fitz
+    doc = fitz.open(str(ai_path))
+    if doc.page_count == 0:
+        raise RuntimeError(f"AI文件无页面: {ai_path.name}")
+    page = doc[0]
+    if max_dim is None:
+        max_dim = 5000  # default, increase for sharper output
+    pw, ph = page.rect.width, page.rect.height  # points at 72 DPI
+    dpi = min(300, 72 * max_dim / max(pw, ph))
+    mat = fitz.Matrix(dpi / 72, dpi / 72)
+    # Render with alpha, then composite onto bg color
+    pix = page.get_pixmap(matrix=mat, alpha=True)
+    rgba = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 4)
+    alpha = rgba[:, :, 3].astype(np.float32) / 255.0
+    bg = np.array(bg_color, dtype=np.uint8)
+    canvas = np.full((pix.height, pix.width, 3), bg, dtype=np.float32)
+    fg = rgba[:, :, :3].astype(np.float32)
+    rgb = (fg * alpha[:, :, None] + canvas * (1 - alpha[:, :, None])).astype(np.uint8)
+    doc.close()
+    print(f"  AI渲染: {rgb.shape[1]}x{rgb.shape[0]} @{dpi:.0f}DPI 绿幕背景 (max={max_dim}px)")
+    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)

@@ -384,3 +384,38 @@ def get_white_bg_alpha(image_bgr: np.ndarray, white_threshold: int = 230) -> np.
         # 与边缘相连的白色区域 → 保持 0（背景）
 
     return result
+
+
+def get_chroma_key_alpha(
+    image_bgr: np.ndarray,
+    key_color_bgr: tuple = (0, 255, 0),
+    threshold: float = 40.0,
+    softness: float = 10.0,
+) -> np.ndarray:
+    """Chroma-key (green screen) alpha mask.
+    
+    Removes pixels close to key_color_bgr, keeping everything else.
+    Uses HSV distance for better color-based separation.
+    
+    Returns uint8 alpha [0, 255], 255=foreground, 0=background.
+    """
+    import cv2
+    import numpy as np
+    
+    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+    key_hsv = cv2.cvtColor(np.uint8([[list(key_color_bgr)]]), cv2.COLOR_BGR2HSV)[0, 0]
+    
+    # Hue distance (circular)
+    hue_diff = np.abs(hsv[:, :, 0].astype(np.float32) - float(key_hsv[0]))
+    hue_diff = np.minimum(hue_diff, 180 - hue_diff)
+    
+    # Saturation and value distance
+    sat_diff = np.abs(hsv[:, :, 1].astype(np.float32) - float(key_hsv[1]))
+    val_diff = np.abs(hsv[:, :, 2].astype(np.float32) - float(key_hsv[2]))
+    
+    # Combined distance
+    dist = np.sqrt(hue_diff ** 2 * 2.0 + sat_diff ** 2 + val_diff ** 2)
+    
+    # Soft threshold: dist <= threshold => bg, dist >= threshold+softness => fg, smooth in between
+    alpha = np.clip((dist - threshold) / softness * 255, 0, 255).astype(np.uint8)
+    return alpha

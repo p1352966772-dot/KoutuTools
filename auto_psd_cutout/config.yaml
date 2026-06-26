@@ -22,6 +22,7 @@ detect:
   text_y_alignment_tol: 10
   two_stage_min_size: 150
   white_threshold: 230
+  protect_inner_white: false
 # ── 行列投影分割（替代传统 CV 检测）───────────────────────────
 # 两遍扫描：先按行间隙切分，再在行内按列间隙切分。
 # 适合白底、行列排列整齐的密集排版图。
@@ -52,6 +53,7 @@ label_text_cleanup:
   region_top_height: 45
   saturation_max: 80
 output_dir: output
+ai_max_dim: 6000  # AI\u6e32\u67d3\u6700\u5927\u8fb9\u957f(px)\uff0c\u8c03\u5927\u53ef\u63d0\u9ad8\u6e05\u6670\u5ea6
 
 # ── 白底图抠图 ───────────────────────────────────────────────
 # 针对纯白背景的密集排版图优化。
@@ -61,8 +63,9 @@ output_dir: output
 # white_threshold: 判定为白色的灰度阈值（0-255），默认 230。
 rgba_crop:
   enabled: true
-  white_bg_alpha: true
+  white_bg_alpha: false
   white_threshold: 230
+  protect_inner_white: false
 
 photoshop:
   add_box_layers: false

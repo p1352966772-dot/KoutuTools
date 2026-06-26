@@ -49,6 +49,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "min_gap_cols": 3,           # 连续 3 列全背景色 → 列间隙
     "min_col_width": 20,         # 过滤太窄的列
     "min_crop_area": 200,
+    "detect_margin": 2,  # px to ignore at edges during row/col detection
 }
 
 
@@ -63,6 +64,7 @@ class SmartGridSplitter:
         self.cfg = {**DEFAULT_CONFIG, **(config or {})}
         self._ocr: RapidOCR | None = None
         self._bg_color_rgb: tuple[int, int, int] | None = None
+        self._text_regions: list[tuple[int, int, int, int]] | None = None
 
     # ── 背景色检测 ──────────────────────────────────────────
 
@@ -131,9 +133,10 @@ class SmartGridSplitter:
         img_array = rgb_array.copy()
         pad = int(self.cfg.get("ocr_pad", 3))
 
+        text_regions = []
         for box, text, conf in result:
             # 只涂白中文文字
-            has_chinese = any('\u4e00' <= c <= '\u9fff' for c in text)
+            has_chinese = any('一' <= c <= '鿿' for c in text)
             if not has_chinese:
                 continue
             xs = [int(p[0]) for p in box]
@@ -144,7 +147,9 @@ class SmartGridSplitter:
             y2 = min(img_array.shape[0], max(ys) + pad)
             # 用背景色填充，不是白色
             img_array[y1:y2, x1:x2] = [bg[0], bg[1], bg[2]]
+            text_regions.append((int(x1), int(y1), int(x2), int(y2)))
 
+        self._text_regions = text_regions
         return Image.fromarray(img_array)
 
     # ── 行检测 ──────────────────────────────────────────────
@@ -177,7 +182,13 @@ class SmartGridSplitter:
         row_pixels = rgb.astype(np.float32)  # (h, w, 3)
         diff = np.abs(row_pixels - bg_np)     # (h, w, 3)
         max_diff = np.max(diff, axis=2)        # (h, w) 每个像素的最大通道差
-        row_max = np.max(max_diff, axis=1)     # (h,)   每行的最大像素差
+        # Ignore margin pixels at left/right edges (handles borders)
+        margin = int(cfg.get("detect_margin", 0))
+        if margin > 0 and margin < w // 2:
+            max_diff_inner = max_diff[:, margin:w - margin]
+            row_max = np.max(max_diff_inner, axis=1)
+        else:
+            row_max = np.max(max_diff, axis=1)     # (h,)   每行的最大像素差
         is_content = row_max > tol
 
         # 找间隙（连续全背景行）
@@ -218,7 +229,13 @@ class SmartGridSplitter:
         bg_np = np.array(bg, dtype=np.float32)
         diff = np.abs(rgb.astype(np.float32) - bg_np)
         max_diff = np.max(diff, axis=2)        # (h, w) 每像素最大通道差
-        col_max = np.max(max_diff, axis=0)     # (w,)   每列的最大像素差
+        # Ignore margin pixels at top/bottom edges (handles borders)
+        margin = int(cfg.get("detect_margin", 0))
+        if margin > 0 and margin < h // 2:
+            max_diff_inner = max_diff[margin:h - margin, :]
+            col_max = np.max(max_diff_inner, axis=0)
+        else:
+            col_max = np.max(max_diff, axis=0)     # (w,)   每列的最大像素差
         is_content = col_max > tol
 
         # 找间隙（连续全背景列）
@@ -450,10 +467,15 @@ def detect_ui_elements_grid(
     grid_cfg = config.get("grid", {})
 
     splitter = SmartGridSplitter(grid_cfg)
-    raw_boxes, _ = splitter.split(image_bgr)
+    raw_boxes, clean_img = splitter.split(image_bgr)
+
+    ocr_cleaned_bgr = None
+    if clean_img is not None:
+        ocr_cleaned_rgb = np.array(clean_img)
+        ocr_cleaned_bgr = cv2.cvtColor(ocr_cleaned_rgb, cv2.COLOR_RGB2BGR)
 
     if not raw_boxes:
-        return {"boxes": [], "groups": [], "canvas_width": w, "canvas_height": h}
+        return {"boxes": [], "groups": [], "canvas_width": w, "canvas_height": h, "ocr_cleaned_bgr": None, "ocr_text_regions": []}
 
     # 按 row 分组
     rows_map: dict[int, list[dict]] = {}
@@ -496,6 +518,8 @@ def detect_ui_elements_grid(
         "groups": groups,
         "canvas_width": w,
         "canvas_height": h,
+        "ocr_cleaned_bgr": ocr_cleaned_bgr,
+        "ocr_text_regions": splitter._text_regions or [],
     }
 
 

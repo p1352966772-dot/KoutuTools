@@ -101,10 +101,18 @@ def save_preview(image_bgr: np.ndarray, detect_result: dict[str, Any], output_pa
             cv2.putText(canvas, label, (8, ly),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
-    # 覆盖已有预览文件
+    # 覆盖已有预览文件（用 PIL 保存，兼容中文路径 + 超大图）
+    from PIL import Image
+    rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+    # 超大图先缩到合理尺寸再保存 JPG
+    h, w = rgb.shape[:2]
+    max_side = 4000
+    if max(h, w) > max_side:
+        scale = max_side / max(h, w)
+        new_w, new_h = int(w * scale), int(h * scale)
+        rgb = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        print(f"  预览图已缩放: {w}x{h} -> {new_w}x{new_h}")
     if output_path.exists():
         output_path.unlink()
-    ok = cv2.imwrite(str(output_path), canvas)
-    if not ok:
-        raise RuntimeError(f"预览图保存失败：{output_path}")
+    Image.fromarray(rgb).save(str(output_path), quality=85)
     return output_path
