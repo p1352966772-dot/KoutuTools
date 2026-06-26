@@ -170,11 +170,11 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
         names = [b["name"] for b in sorted(gboxes, key=lambda x: x["x1"])]
         print(f"  {group['name']}: {', '.join(names)}")
 
-    # Step 3: Debug preview with overlay
-    preview_path = preview_dir / f"{image_path.stem}_preview.jpg"
+    # Step 3: Preview (debug only)
     detect_result["canvas_width"] = image_bgr.shape[1]
     detect_result["canvas_height"] = image_bgr.shape[0]
     if debug:
+        preview_path = preview_dir / f"{image_path.stem}_preview.jpg"
         save_preview(image_bgr, detect_result, preview_path, config)
         print(f"已生成预览图：{preview_path}")
 
