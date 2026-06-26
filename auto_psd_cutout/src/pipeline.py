@@ -101,12 +101,17 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
             print(f"RMBG probability map failed (proceeding without): {exc}")
             rmbg_prob_map = None
 
-    # Use AI source alpha if available (perfect edges from vector file)
+    # Use AI source alpha + clean RGB (perfect edges from vector file)
     ai_alpha = getattr(read_image_bgr, '_ai_alpha', None)
+    clean_bgr = None  # 等检测完后才替换，保证检测用品红底
     if ai_alpha is not None:
         rmbg_alpha = ai_alpha
-        read_image_bgr._ai_alpha = None  # clear for next file
-        print(f"使用AI源文件alpha ({rmbg_alpha.shape})")
+        ai_rgb = getattr(read_image_bgr, '_ai_rgb', None)
+        if ai_rgb is not None:
+            clean_bgr = cv2.cvtColor(ai_rgb, cv2.COLOR_RGB2BGR)
+        read_image_bgr._ai_alpha = None
+        read_image_bgr._ai_rgb = None
+        print(f"使用AI源文件alpha (检测用品红底) ({rmbg_alpha.shape})")
     else:
         rmbg_alpha = _get_alpha_mask(image_bgr, config)
 
@@ -143,15 +148,22 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
     # Step 2: Structure channel detection (Path A) + dual-channel scoring (Path B)
     grid_mode = config.get("grid", {}).get("enabled", True)
     if grid_mode:
+        # 检测必须用品红底图，否则找不到元素间隙
         detect_result = detect_ui_elements_grid(image_bgr, config)
     else:
         detect_result = detect_ui_elements(image_bgr, config, rmbg_prob_map=rmbg_prob_map)
+
+    # 检测完成后，切换到 clean RGB 用于后续输出（避免品红残留边缘）
+    if clean_bgr is not None:
+        image_bgr = clean_bgr
+
     boxes = detect_result.get("boxes", [])
     groups = detect_result.get("groups", [])
 
     # 如果有 OCR 涂白图，用它做抠图底图（中文文字被涂白）
+    # AI源文件已有完美alpha，不要用OCR品红底图覆盖clean RGB
     source_bgr = detect_result.get("ocr_cleaned_bgr")
-    if source_bgr is not None:
+    if source_bgr is not None and clean_bgr is None:
         image_bgr = source_bgr
         print("使用 OCR 涂白后的图片作为抠图底图")
 
@@ -227,9 +239,9 @@ def read_image_bgr(image_path: Path) -> np.ndarray:
     """Read image as BGR numpy array. Supports .ai via PyMuPDF (embedded PDF)."""
     suffix = image_path.suffix.lower()
     if suffix == ".ai":
-        bgr, ai_alpha = _read_ai_as_bgr(image_path, max_dim=None)
-        # Store alpha on function for later use (hack but simple)
+        bgr, ai_rgb, ai_alpha = _read_ai_as_bgr(image_path, max_dim=None)
         read_image_bgr._ai_alpha = ai_alpha
+        read_image_bgr._ai_rgb = ai_rgb
         return bgr
     try:
         with Image.open(image_path) as img:
@@ -240,10 +252,12 @@ def read_image_bgr(image_path: Path) -> np.ndarray:
     return cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
 
 
-def _read_ai_as_bgr(ai_path: Path, max_dim: int | None = None) -> tuple[np.ndarray, np.ndarray]:
-    """Render .ai via PyMuPDF with transparent bg.
-    Returns (bgr_for_detection, alpha_mask) where alpha comes from source file.
-    The alpha is used directly as cutout mask - no model needed."""
+def _read_ai_as_bgr(ai_path: Path, max_dim: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Render .ai via PyMuPDF. Returns (detection_bgr, clean_rgb, src_alpha).
+    - detection_bgr: composited onto solid bg for grid detection
+    - clean_rgb: raw foreground RGB (no bg contamination on edges)
+    - src_alpha: alpha from source file (perfect edges)
+    """
     import fitz
     doc = fitz.open(str(ai_path))
     if doc.page_count == 0:
@@ -256,13 +270,13 @@ def _read_ai_as_bgr(ai_path: Path, max_dim: int | None = None) -> tuple[np.ndarr
     mat = fitz.Matrix(dpi / 72, dpi / 72)
     pix = page.get_pixmap(matrix=mat, alpha=True)
     rgba = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 4)
-    # Alpha from source (perfect edges)
     src_alpha = rgba[:, :, 3].copy()
-    # Composite onto magenta for grid detection
+    clean_rgb = np.ascontiguousarray(rgba[:, :, :3])
+    # Composite onto magenta for grid detection only
     alpha_f = src_alpha.astype(np.float32) / 255.0
     bg = np.array([255, 0, 255], dtype=np.float32)
     fg = rgba[:, :, :3].astype(np.float32)
-    rgb = (fg * alpha_f[:, :, None] + bg * (1 - alpha_f[:, :, None])).astype(np.uint8)
+    det_rgb = (fg * alpha_f[:, :, None] + bg * (1 - alpha_f[:, :, None])).astype(np.uint8)
     doc.close()
-    print(f"  AI渲染: {rgb.shape[1]}x{rgb.shape[0]} @{dpi:.0f}DPI 透明底(用源alpha) (max={max_dim}px)")
-    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), src_alpha
+    print(f"  AI渲染: {det_rgb.shape[1]}x{det_rgb.shape[0]} @{dpi:.0f}DPI (max={max_dim}px)")
+    return cv2.cvtColor(det_rgb, cv2.COLOR_RGB2BGR), clean_rgb, src_alpha
