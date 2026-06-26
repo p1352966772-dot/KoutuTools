@@ -116,11 +116,11 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
         rel_parent = image_path.resolve().parent.relative_to(input_root)
     except ValueError:
         rel_parent = Path()
-    # PSD goes directly into mirrored folder, work files in _work/
-    psd_parent_dir = output_root / rel_parent
-    work_dir = output_root / rel_parent / image_path.stem / "_work"
+    # PSD and _work/ at pack level (not per image)
+    pack_dir = output_root / rel_parent
+    work_dir = pack_dir / "_work"
     preview_dir = work_dir / "preview" if debug else None
-    psd_parent_dir.mkdir(parents=True, exist_ok=True)
+    pack_dir.mkdir(parents=True, exist_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
 
     # Save full RGBA base layer (use OCR-cleaned image if grid mode)
@@ -175,8 +175,8 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
         box["rgba_path"] = None
 
     # Step 4: Generate JSX (with rgba_path support)
-    suffix = config.get("photoshop", {}).get("psd_name_suffix", "_auto")
-    psd_path = psd_parent_dir / f"{image_path.stem}{suffix}.psd"
+
+    psd_path = pack_dir / f"{image_path.stem}.psd"
     jsx_path = work_dir / "build_psd.jsx"
     generate_jsx(
         detect_result,
