@@ -230,7 +230,7 @@ def read_image_bgr(image_path: Path) -> np.ndarray:
     return cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
 
 
-def _read_ai_as_bgr(ai_path: Path, max_dim: int | None = None, bg_color: tuple = (255, 0, 255)  # purple/magenta, unlikely in artwork) -> np.ndarray:
+def _read_ai_as_bgr(ai_path: Path, max_dim: int | None = None, bg_color: tuple = (255, 0, 255)) -> np.ndarray:
     """Render .ai file to BGR image via embedded PDF stream (PyMuPDF).
     bg_color: RGB tuple for background fill (default green screen for easy keying).
     Limits output to max_dim pixels on longest side."""
