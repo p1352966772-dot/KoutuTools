@@ -96,9 +96,15 @@ def watch_mode(input_dir: Path, config: dict, interval: int, no_ps: bool, debug:
     print(f"[监控模式] 扫描间隔: {interval}s, 按 Ctrl+C 停止\n")
 
     def _already_done(image_path: Path) -> bool:
-        """Check if output already exists for this image."""
-        out = Path(config["output_dir"]) / image_path.stem
-        return out.exists() and any(out.iterdir())  # preview dir exists
+        """Check if PSD already exists for this image."""
+        out_root = Path(config["output_dir"])
+        in_root = Path(config["input_dir"]).resolve()
+        try:
+            rel_parent = image_path.resolve().parent.relative_to(in_root)
+        except ValueError:
+            rel_parent = Path()
+        psd_path = out_root / rel_parent / f"{image_path.stem}.psd"
+        return psd_path.exists()
 
     # Mark existing files as already processed (check output dirs)
     existing = collect_input_images(input_dir)
