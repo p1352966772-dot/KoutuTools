@@ -397,14 +397,12 @@ def get_chroma_key_alpha(
     image_bgr: np.ndarray,
     key_color_bgr: tuple = (0, 255, 0),
     threshold: float = 40.0,
-    softness: float = 10.0,
+    softness: float = 20.0,
 ) -> np.ndarray:
-    """Chroma-key (green screen) alpha mask.
-    
-    Removes pixels close to key_color_bgr, keeping everything else.
-    Uses HSV distance for better color-based separation.
+    """Chroma-key (green screen) alpha mask + despill.
     
     Returns uint8 alpha [0, 255], 255=foreground, 0=background.
+    Includes green spill removal on semi-transparent edges.
     """
     import cv2
     import numpy as np
@@ -420,9 +418,19 @@ def get_chroma_key_alpha(
     sat_diff = np.abs(hsv[:, :, 1].astype(np.float32) - float(key_hsv[1]))
     val_diff = np.abs(hsv[:, :, 2].astype(np.float32) - float(key_hsv[2]))
     
-    # Combined distance
-    dist = np.sqrt(hue_diff ** 2 * 2.0 + sat_diff ** 2 + val_diff ** 2)
+    # Combined distance (hue weighted more)
+    dist = np.sqrt(hue_diff ** 2 * 3.0 + sat_diff ** 2 + val_diff ** 2)
     
-    # Soft threshold: dist <= threshold => bg, dist >= threshold+softness => fg, smooth in between
+    # Soft threshold: wider softness for smoother edges
     alpha = np.clip((dist - threshold) / softness * 255, 0, 255).astype(np.uint8)
+    
+    # Despill: reduce green in semi-transparent edge pixels
+    # Where alpha < 255, subtract green proportionally
+    alpha_f = alpha.astype(np.float32) / 255.0
+    spill_factor = np.clip(1.0 - alpha_f, 0, 1) * 0.6  # 60% max green reduction
+    # Reduce green channel, clamp to avoid going below 0
+    bgr_f = image_bgr.astype(np.float32)
+    bgr_f[:, :, 1] = np.clip(bgr_f[:, :, 1] - spill_factor * 255, 0, 255)
+    image_bgr[:] = bgr_f.astype(np.uint8)
+    
     return alpha

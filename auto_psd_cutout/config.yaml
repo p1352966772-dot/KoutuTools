@@ -91,7 +91,6 @@ rmbg_scoring:
   align_weight: 0.15
   area_weight: 0.15
   edge_weight: 0.3
-  enabled: true
   rmbg_weight: 0.25
   score_threshold: 0.35
   shape_weight: 0.15
