@@ -101,7 +101,14 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
             print(f"RMBG probability map failed (proceeding without): {exc}")
             rmbg_prob_map = None
 
-    rmbg_alpha = _get_alpha_mask(image_bgr, config)
+    # Use AI source alpha if available (perfect edges from vector file)
+    ai_alpha = getattr(read_image_bgr, '_ai_alpha', None)
+    if ai_alpha is not None:
+        rmbg_alpha = ai_alpha
+        read_image_bgr._ai_alpha = None  # clear for next file
+        print(f"使用AI源文件alpha ({rmbg_alpha.shape})")
+    else:
+        rmbg_alpha = _get_alpha_mask(image_bgr, config)
 
     output_root = Path(config["output_dir"])
     input_root = Path(config["input_dir"]).resolve()
@@ -220,7 +227,10 @@ def read_image_bgr(image_path: Path) -> np.ndarray:
     """Read image as BGR numpy array. Supports .ai via PyMuPDF (embedded PDF)."""
     suffix = image_path.suffix.lower()
     if suffix == ".ai":
-        return _read_ai_as_bgr(image_path, max_dim=None)
+        bgr, ai_alpha = _read_ai_as_bgr(image_path, max_dim=None)
+        # Store alpha on function for later use (hack but simple)
+        read_image_bgr._ai_alpha = ai_alpha
+        return bgr
     try:
         with Image.open(image_path) as img:
             rgb = img.convert("RGB")
@@ -230,28 +240,29 @@ def read_image_bgr(image_path: Path) -> np.ndarray:
     return cv2.cvtColor(array, cv2.COLOR_RGB2BGR)
 
 
-def _read_ai_as_bgr(ai_path: Path, max_dim: int | None = None, bg_color: tuple = (255, 0, 255)) -> np.ndarray:
-    """Render .ai file to BGR image via embedded PDF stream (PyMuPDF).
-    bg_color: RGB tuple for background fill (default green screen for easy keying).
-    Limits output to max_dim pixels on longest side."""
+def _read_ai_as_bgr(ai_path: Path, max_dim: int | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Render .ai via PyMuPDF with transparent bg.
+    Returns (bgr_for_detection, alpha_mask) where alpha comes from source file.
+    The alpha is used directly as cutout mask - no model needed."""
     import fitz
     doc = fitz.open(str(ai_path))
     if doc.page_count == 0:
         raise RuntimeError(f"AI文件无页面: {ai_path.name}")
     page = doc[0]
     if max_dim is None:
-        max_dim = 5000  # default, increase for sharper output
-    pw, ph = page.rect.width, page.rect.height  # points at 72 DPI
+        max_dim = 5000
+    pw, ph = page.rect.width, page.rect.height
     dpi = min(300, 72 * max_dim / max(pw, ph))
     mat = fitz.Matrix(dpi / 72, dpi / 72)
-    # Render with alpha, then composite onto bg color
     pix = page.get_pixmap(matrix=mat, alpha=True)
     rgba = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 4)
-    alpha = rgba[:, :, 3].astype(np.float32) / 255.0
-    bg = np.array(bg_color, dtype=np.uint8)
-    canvas = np.full((pix.height, pix.width, 3), bg, dtype=np.float32)
+    # Alpha from source (perfect edges)
+    src_alpha = rgba[:, :, 3].copy()
+    # Composite onto magenta for grid detection
+    alpha_f = src_alpha.astype(np.float32) / 255.0
+    bg = np.array([255, 0, 255], dtype=np.float32)
     fg = rgba[:, :, :3].astype(np.float32)
-    rgb = (fg * alpha[:, :, None] + canvas * (1 - alpha[:, :, None])).astype(np.uint8)
+    rgb = (fg * alpha_f[:, :, None] + bg * (1 - alpha_f[:, :, None])).astype(np.uint8)
     doc.close()
-    print(f"  AI渲染: {rgb.shape[1]}x{rgb.shape[0]} @{dpi:.0f}DPI 品红底 (max={max_dim}px)")
-    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    print(f"  AI渲染: {rgb.shape[1]}x{rgb.shape[0]} @{dpi:.0f}DPI 透明底(用源alpha) (max={max_dim}px)")
+    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), src_alpha
