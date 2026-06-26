@@ -31,13 +31,14 @@ class ProcessResult:
 
 
 def collect_input_images(input_dir: Path) -> list[Path]:
+    """Recursively scan input_dir for supported image files."""
     if not input_dir.exists():
         return []
-    return sorted(
-        path
-        for path in input_dir.iterdir()
-        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
-    )
+    files = []
+    for path in input_dir.rglob("*"):
+        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
+            files.append(path)
+    return sorted(files)
 
 
 def _get_alpha_mask(image_bgr: np.ndarray, config: dict[str, Any]) -> np.ndarray | None:
@@ -109,7 +110,13 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
     rmbg_alpha = _get_alpha_mask(image_bgr, config)
 
     output_root = Path(config["output_dir"])
-    image_output_dir = output_root / image_path.stem
+    input_root = Path(config["input_dir"]).resolve()
+    # Mirror input subdirectory structure in output
+    try:
+        rel_parent = image_path.resolve().parent.relative_to(input_root)
+    except ValueError:
+        rel_parent = Path()
+    image_output_dir = output_root / rel_parent / image_path.stem
     preview_dir = image_output_dir / "preview"
     image_output_dir.mkdir(parents=True, exist_ok=True)
 
