@@ -72,7 +72,7 @@ def _get_alpha_mask(image_bgr: np.ndarray, config: dict[str, Any]) -> np.ndarray
         except Exception as exc:
             print(f"白底图抠图失败 ({exc})，回退到 BRIA 模型。")
 
-    # ── 方法 2：BRIA RMBG-1.4 深度学习模型 ──────────────────────────
+    # ── 方法 2：BRIA RMBG-1.4（需要 torch）───────────────────────
     try:
         alpha = get_bria14_alpha(image_bgr)
         # BRIA 可能误删元素内白色 → 用边缘连通性保护
@@ -83,6 +83,14 @@ def _get_alpha_mask(image_bgr: np.ndarray, config: dict[str, Any]) -> np.ndarray
         return alpha
     except Exception as exc:
         print(f"BRIA alpha mask failed: {exc}")
+        # Fallback: use white-bg alpha
+        try:
+            white_threshold = int(rgba_config.get("white_threshold", 230))
+            alpha = get_white_bg_alpha(image_bgr, white_threshold)
+            print(f"白底图抠图完成 (fallback) ({alpha.shape})")
+            return alpha
+        except Exception as exc2:
+            print(f"Fallback also failed: {exc2}")
 
     return None
 

@@ -6,10 +6,14 @@ from typing import Any
 import cv2
 import numpy as np
 from PIL import Image, ImageFilter
-import torch
-import torch.nn.functional as F
-from torchvision import transforms
-from transformers import AutoModelForImageSegmentation
+try:
+    import torch
+    import torch.nn.functional as F
+    from torchvision import transforms
+    from transformers import AutoModelForImageSegmentation
+    _TORCH_OK = True
+except ImportError:
+    _TORCH_OK = False
 
 
 # ============================================================
@@ -48,6 +52,9 @@ def get_bria14_alpha(image_bgr: np.ndarray) -> np.ndarray:
     rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     pil_img = Image.fromarray(rgb)
 
+    if not _TORCH_OK:
+        print("BRIA skipped: torch not installed (pip install torch)")
+        raise RuntimeError("torch not installed")
     try:
         model, device = _load_bria14_model()
         input_tensor = _bria14_transform(pil_img)
