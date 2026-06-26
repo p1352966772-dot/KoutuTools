@@ -171,7 +171,10 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
     if rmbg_alpha is not None and rgba_full_path is None:
         rgba_full_path = work_dir / "full_cutout.png"
         rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        rgba_full = np.dstack([rgb, rmbg_alpha])
+        # Alpha预乘：边缘像素RGB按alpha缩放，消除彩色镶边
+        alpha_f = rmbg_alpha.astype(np.float32) / 255.0
+        rgb_premul = (rgb.astype(np.float32) * alpha_f[:, :, None]).astype(np.uint8)
+        rgba_full = np.dstack([rgb_premul, rmbg_alpha])
         Image.fromarray(rgba_full, "RGBA").save(str(rgba_full_path))
         if debug:
             print(f"全图透明底图已保存: {rgba_full_path.name}")
