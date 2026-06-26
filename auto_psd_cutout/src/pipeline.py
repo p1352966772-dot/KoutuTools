@@ -163,7 +163,7 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
     if not boxes:
         msg = "未检测到UI元素，请检查图片或调整检测参数。"
         print(msg)
-        return ProcessResult(image=image_path, ok=False, output_dir=image_output_dir, error=msg)
+        return ProcessResult(image=image_path, ok=False, output_dir=pack_dir, error=msg)
 
     for group in groups:
         gboxes = [b for b in boxes if b["group_id"] == group["id"]]
@@ -213,7 +213,7 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
         ok=True,
         item_count=len(boxes),
         group_count=len(groups),
-        output_dir=image_output_dir,
+        output_dir=pack_dir,
         psd_created=psd_created,
     )
 
