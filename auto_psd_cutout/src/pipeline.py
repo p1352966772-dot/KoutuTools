@@ -87,7 +87,7 @@ def _get_alpha_mask(image_bgr: np.ndarray, config: dict[str, Any]) -> np.ndarray
     return None
 
 
-def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool = True) -> ProcessResult:
+def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool = True, debug: bool = False) -> ProcessResult:
     print(f"开始处理：{image_path.name}")
     try:
         image_bgr = read_image_bgr(image_path)
@@ -116,9 +116,12 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
         rel_parent = image_path.resolve().parent.relative_to(input_root)
     except ValueError:
         rel_parent = Path()
-    image_output_dir = output_root / rel_parent / image_path.stem
-    preview_dir = image_output_dir / "preview"
-    image_output_dir.mkdir(parents=True, exist_ok=True)
+    # PSD goes directly into mirrored folder, work files in _work/
+    psd_parent_dir = output_root / rel_parent
+    work_dir = output_root / rel_parent / image_path.stem / "_work"
+    preview_dir = work_dir / "preview" if debug else None
+    psd_parent_dir.mkdir(parents=True, exist_ok=True)
+    work_dir.mkdir(parents=True, exist_ok=True)
 
     # Save full RGBA base layer (use OCR-cleaned image if grid mode)
     # Note: full_cutout.png is re-created after detection when ocr_cleaned_bgr exists
@@ -141,11 +144,12 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
 
     # Save full RGBA base layer
     if rmbg_alpha is not None and rgba_full_path is None:
-        rgba_full_path = image_output_dir / "full_cutout.png"
+        rgba_full_path = work_dir / "full_cutout.png"
         rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         rgba_full = np.dstack([rgb, rmbg_alpha])
         Image.fromarray(rgba_full, "RGBA").save(str(rgba_full_path))
-        print(f"全图透明底图已保存: {rgba_full_path.name}")
+        if debug:
+            print(f"全图透明底图已保存: {rgba_full_path.name}")
 
     print(f"检测到 {len(groups)} 行，{len(boxes)} 个元素")
     if not boxes:
@@ -162,8 +166,9 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
     preview_path = preview_dir / f"{image_path.stem}_preview.jpg"
     detect_result["canvas_width"] = image_bgr.shape[1]
     detect_result["canvas_height"] = image_bgr.shape[0]
-    save_preview(image_bgr, detect_result, preview_path, config)
-    print(f"已生成预览图：{preview_path}")
+    if debug:
+        save_preview(image_bgr, detect_result, preview_path, config)
+        print(f"已生成预览图：{preview_path}")
 
     # Step 3b: Clear individual rgba_path (now using full_cutout.png as source)
     for box in boxes:
@@ -171,8 +176,8 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
 
     # Step 4: Generate JSX (with rgba_path support)
     suffix = config.get("photoshop", {}).get("psd_name_suffix", "_auto")
-    psd_path = image_output_dir / f"{image_path.stem}{suffix}.psd"
-    jsx_path = image_output_dir / "build_psd.jsx"
+    psd_path = psd_parent_dir / f"{image_path.stem}{suffix}.psd"
+    jsx_path = work_dir / "build_psd.jsx"
     generate_jsx(
         detect_result,
         image_path.resolve(),

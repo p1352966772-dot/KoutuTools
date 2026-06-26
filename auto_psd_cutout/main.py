@@ -17,6 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--file", help="只处理指定图片")
     parser.add_argument("--no-photoshop", action="store_true", help="只生成 PNG、预览、manifest 和 JSX，不自动调用 Photoshop")
     parser.add_argument("--watch", action="store_true", help="定时扫描模式，监控 input 目录新增文件自动处理")
+    parser.add_argument("--debug", action="store_true", help="调试模式，输出预览图/OCR图/抠图层等中间文件")
     return parser.parse_args()
 
 
@@ -47,7 +48,7 @@ def main() -> int:
 
     if args.watch:
         interval = int(config.get("watch_interval", 10))
-        watch_mode(input_dir, config, interval, args.no_photoshop)
+        watch_mode(input_dir, config, interval, args.no_photoshop, args.debug)
         return 0
 
     if args.file:
@@ -69,7 +70,7 @@ def main() -> int:
 
     results = []
     for image_path in tqdm(images, desc="批量处理", unit="张"):
-        results.append(process_image(image_path, config, run_photoshop=not args.no_photoshop))
+        results.append(process_image(image_path, config, run_photoshop=not args.no_photoshop, debug=args.debug))
 
     ok_count = sum(1 for result in results if result.ok)
     fail_count = len(results) - ok_count
@@ -88,7 +89,7 @@ def main() -> int:
 
 
 
-def watch_mode(input_dir: Path, config: dict, interval: int, no_ps: bool) -> None:
+def watch_mode(input_dir: Path, config: dict, interval: int, no_ps: bool, debug: bool = False) -> None:
     """Polling watch loop: scan for new files every N seconds."""
     import time
     print(f"\n[监控模式] 扫描目录: {input_dir}")
@@ -109,7 +110,7 @@ def watch_mode(input_dir: Path, config: dict, interval: int, no_ps: bool) -> Non
             print(f"[监控] 发现 {len(pending)} 个未处理文件，准备处理...")
             for p in pending:
                 print(f"[监控] 处理: {p.name}")
-                result = process_image(p, config, run_photoshop=not no_ps)
+                result = process_image(p, config, run_photoshop=not no_ps, debug=debug)
                 status = "OK" if result.ok else f"FAIL: {result.error}"
                 print(f"[监控] {p.name}: {status}")
     else:
@@ -127,7 +128,7 @@ def watch_mode(input_dir: Path, config: dict, interval: int, no_ps: bool) -> Non
             if new_files:
                 for image_path in new_files:
                     print(f"\n[监控] 发现新文件: {image_path.name}")
-                    result = process_image(image_path, config, run_photoshop=not no_ps)
+                    result = process_image(image_path, config, run_photoshop=not no_ps, debug=debug)
                     if result.ok:
                         existing.add(image_path)
                         print(f"[监控] 处理完成: {image_path.name} -> {result.item_count}个元素")
