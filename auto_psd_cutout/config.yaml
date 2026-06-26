@@ -87,6 +87,7 @@ preview:
   draw_index: true
   draw_rows: true
 rmbg_scoring:
+  enabled: false
   align_weight: 0.15
   area_weight: 0.15
   edge_weight: 0.3
