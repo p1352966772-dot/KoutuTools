@@ -171,10 +171,7 @@ def process_image(image_path: Path, config: dict[str, Any], run_photoshop: bool 
     if rmbg_alpha is not None and rgba_full_path is None:
         rgba_full_path = work_dir / "full_cutout.png"
         rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        # Alpha预乘：边缘像素RGB按alpha缩放，消除彩色镶边
-        alpha_f = rmbg_alpha.astype(np.float32) / 255.0
-        rgb_premul = (rgb.astype(np.float32) * alpha_f[:, :, None]).astype(np.uint8)
-        rgba_full = np.dstack([rgb_premul, rmbg_alpha])
+        rgba_full = np.dstack([rgb, rmbg_alpha])
         Image.fromarray(rgba_full, "RGBA").save(str(rgba_full_path))
         if debug:
             print(f"全图透明底图已保存: {rgba_full_path.name}")
@@ -274,12 +271,17 @@ def _read_ai_as_bgr(ai_path: Path, max_dim: int | None = None) -> tuple[np.ndarr
     pix = page.get_pixmap(matrix=mat, alpha=True)
     rgba = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 4)
     src_alpha = rgba[:, :, 3].copy()
-    clean_rgb = np.ascontiguousarray(rgba[:, :, :3])
+    # PyMuPDF alpha=True 返回预乘Alpha → 反预乘恢复直通RGB
+    premul_rgb = rgba[:, :, :3].astype(np.float32)
+    alpha_safe = np.where(src_alpha > 0, src_alpha.astype(np.float32), 1.0)
+    clean_rgb = np.clip(premul_rgb * 255.0 / alpha_safe[:, :, None], 0, 255).astype(np.uint8)
+    clean_rgb[src_alpha == 0] = 0
+    clean_rgb = np.ascontiguousarray(clean_rgb)
     # Composite onto magenta for grid detection only
     alpha_f = src_alpha.astype(np.float32) / 255.0
     bg = np.array([255, 0, 255], dtype=np.float32)
-    fg = rgba[:, :, :3].astype(np.float32)
-    det_rgb = (fg * alpha_f[:, :, None] + bg * (1 - alpha_f[:, :, None])).astype(np.uint8)
+    # fg is already premultiplied: det = premul + bg*(1-alpha)
+    det_rgb = (premul_rgb + bg * (1 - alpha_f[:, :, None])).astype(np.uint8)
     doc.close()
     print(f"  AI渲染: {det_rgb.shape[1]}x{det_rgb.shape[0]} @{dpi:.0f}DPI (max={max_dim}px)")
     return cv2.cvtColor(det_rgb, cv2.COLOR_RGB2BGR), clean_rgb, src_alpha
