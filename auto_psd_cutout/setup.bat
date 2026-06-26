@@ -14,15 +14,18 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo [2/3] Installing Python packages...
-pip install -r requirements.txt
+echo [2/3] Installing torch (CPU-only, ~200MB)...
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 
 echo.
-echo [3/3] Creating folders...
+echo [3/3] Installing other packages...
+pip install -r requirements.txt
+pip install transformers torchvision --index-url https://download.pytorch.org/whl/cpu
+
+echo.
 if not exist input mkdir input
 if not exist output mkdir output
 
-echo.
 echo ============================================
 echo   Setup Complete!
 echo   Run: python main.py --watch
