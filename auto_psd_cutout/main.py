@@ -107,7 +107,7 @@ def watch_mode(input_dir: Path, config: dict, interval: int, no_ps: bool, debug:
         return psd_path.exists()
 
     # Mark existing files as already processed (check output dirs)
-    existing = collect_input_images(input_dir)
+    existing = set(collect_input_images(input_dir))
     if existing:
         done = [p for p in existing if _already_done(p)]
         pending = [p for p in existing if not _already_done(p)]
